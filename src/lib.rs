@@ -1,5 +1,4 @@
 use std::ops::*;
-
 pub trait FastCacheExpiration<T> {
     fn expire(&mut self);
 
@@ -9,7 +8,6 @@ pub trait FastCacheExpiration<T> {
 pub trait FastCacheGet<T> {
     fn get_or_insert_with<F: FnOnce() -> T>(&mut self, f: F) -> &T;
 }
-
 
 pub trait FastCacheMaybeGet<T> {
     fn maybe_get_or_insert_with<F: FnOnce() -> Option<T>>(&mut self, f: F) -> Option<&T>;
