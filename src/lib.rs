@@ -1,108 +1,161 @@
 use std::ops::*;
+use std::cell::*;
+use std::marker::PhantomData;
+
 pub trait FastCacheExpiration<T> {
-    fn expire(&mut self);
-
-    fn has_expired<X>(&self, expiration: X) -> bool where X: FnOnce(&T) -> bool;
+    fn expire_with<X>(self, expiration: X) -> Self where X: FnOnce(&T) -> bool;
 }
 
-pub trait FastCacheGet<T> {
-    fn get_or_insert_with<F: FnOnce() -> T>(&mut self, f: F) -> &T;
+pub trait FastCacheGet<'a, T, R> {
+    fn get_or_insert_with<F: FnOnce() -> T>(self, f: F) -> R;
 }
 
-pub trait FastCacheMaybeGet<T> {
-    fn maybe_get_or_insert_with<F: FnOnce() -> Option<T>>(&mut self, f: F) -> Option<&T>;
+pub trait FastCacheMaybeGet<'a, T, R> {
+    fn maybe_get_or_insert_with<F: FnOnce() -> Option<T>>(self, f: F) -> Option<R>;
 }
 
-impl<T> FastCacheExpiration<T> for Option<T> {
-    fn expire(&mut self) {
-        self.take();
-    }
+//
+// Option
+//
 
-    fn has_expired<X>(&self, expiration: X) -> bool
+impl<'a, T> FastCacheExpiration<T> for &'a mut Option<T> {
+    fn expire_with<X>(self, expiration: X) -> Self
     where X: FnOnce(&T) -> bool {
-        self.as_ref().map(expiration).unwrap_or(false)
+        if self.as_ref().map(expiration).unwrap_or(false) {
+            self.take();
+        }
+
+        self
     }
 }
 
-impl<T> FastCacheGet<T> for Option<T> {
-    fn get_or_insert_with<F: FnOnce() -> T>(&mut self, f: F) -> &T {
+impl<'a, T> FastCacheGet<'a, T, &'a T> for &'a mut Option<T> {
+    fn get_or_insert_with<F: FnOnce() -> T>(self, f: F) -> &'a T {
         self.get_or_insert_with(f)
     }
 }
 
-impl<T> FastCacheMaybeGet<T> for Option<T> {
-    fn maybe_get_or_insert_with<F: FnOnce() -> Option<T>>(&mut self, f: F) -> Option<&T> {
-        *self = (f)();
+impl<'a, T> FastCacheMaybeGet<'a, T, &'a T> for &'a mut Option<T> {
+    fn maybe_get_or_insert_with<F: FnOnce() -> Option<T>>(self, f: F) -> Option<&'a T> {
+        if self.is_none() {
+            *self = (f)();
+        }
 
         self.as_ref()
     }
 }
 
-pub trait FastCacheAccessor<T>: FastCacheExpiration<T> + FastCacheGet<T> where Self: Sized {
-    fn access<X, F>(&mut self, expiration: X, filler: F) -> CacheAccesor<T, Self, X, F> where F: FnOnce() -> T, X: FnOnce(&T) -> bool;
+//
+// Refcell
+//
+
+impl<'a, T> FastCacheExpiration<T> for &'a RefCell<Option<T>> {
+    fn expire_with<X>(self, expiration: X) -> Self
+    where X: FnOnce(&T) -> bool {
+        if self.borrow().as_ref().map(expiration).unwrap_or(false) {
+            self.borrow_mut().take();
+        }
+
+        self
+    }
 }
 
-pub trait FastCacheMaybeAccessor<T>: FastCacheExpiration<T> + FastCacheMaybeGet<T> where Self: Sized {
-    fn maybe_access<X, F>(&mut self, expiration: X, filler: F) -> MaybeCacheAccesor<T, Self, X, F> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool;
+impl<'a, T> FastCacheGet<'a, T, Ref<'a, T>> for &'a RefCell<Option<T>> {
+    fn get_or_insert_with<F: FnOnce() -> T>(self, f: F) -> Ref<'a, T> {
+        if self.borrow().is_none() {
+            *self.borrow_mut() = Some(f());
+        }
+
+        Ref::map(self.borrow(), |v| v.as_ref().unwrap())
+    }
 }
 
-impl<C, T> FastCacheAccessor<T> for C where C: FastCacheExpiration<T> + FastCacheGet<T> {
-    fn access<X, F>(&mut self, expiration: X, filler: F) -> CacheAccesor<T, Self, X, F> where F: FnOnce() -> T, X: FnOnce(&T) -> bool {
+impl<'a, T> FastCacheMaybeGet<'a, T, Ref<'a, T>> for &'a RefCell<Option<T>> {
+    fn maybe_get_or_insert_with<F: FnOnce() -> Option<T>>(self, f: F) -> Option<Ref<'a, T>> {
+        if self.borrow().is_none() {
+            *self.borrow_mut() = (f)();
+        }
+
+        if self.borrow().is_some() {
+            Some(Ref::map(self.borrow(), |v| v.as_ref().unwrap()))
+        } else {
+            None
+        }
+    }
+}
+
+//
+// Implementation
+//
+
+pub trait FastCacheAccessor<'a, T, R>: FastCacheExpiration<T> + FastCacheGet<'a, T, R> where Self: Sized {
+    fn access<X, F>(self, expiration: X, filler: F) -> CacheAccesor<'a, T, Self, X, F, R> where F: FnOnce() -> T, X: FnOnce(&T) -> bool;
+}
+
+pub trait FastCacheMaybeAccessor<'a, T, R>: FastCacheExpiration<T> + FastCacheMaybeGet<'a, T, R> where Self: Sized {
+    fn maybe_access<X, F>(self, expiration: X, filler: F) -> MaybeCacheAccesor<'a, T, Self, X, F, R> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool;
+}
+
+impl<'a, C, T, R> FastCacheAccessor<'a, T, R> for C where C: FastCacheExpiration<T> + FastCacheGet<'a, T, R> {
+    fn access<X, F>(self, expiration: X, filler: F) -> CacheAccesor<'a, T, Self, X, F, R> where F: FnOnce() -> T, X: FnOnce(&T) -> bool {
         CacheAccesor {
-            state: std::cell::RefCell::new(CacheState::Unknown(CacheStateUnknown {
+            state: CacheState::Unknown(CacheStateUnknown {
                 cache: self,
                 expiration: expiration,
-                fill: filler
-            }))
+                fill: filler,
+                phantom: PhantomData
+            }, PhantomData),
+            phantom: PhantomData,
         }
     }
 }
 
-impl<C, T> FastCacheMaybeAccessor<T> for C where C: FastCacheExpiration<T> + FastCacheMaybeGet<T> {
-    fn maybe_access<X, F>(&mut self, expiration: X, filler: F) -> MaybeCacheAccesor<T, Self, X, F> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool {
+impl<'a, C, T, R> FastCacheMaybeAccessor<'a, T, R> for C where C: FastCacheExpiration<T> + FastCacheMaybeGet<'a, T, R> {
+    fn maybe_access<X, F>(self, expiration: X, filler: F) -> MaybeCacheAccesor<'a, T, Self, X, F, R> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool {
         MaybeCacheAccesor {
-            state: std::cell::RefCell::new(MaybeCacheState::Unknown(MaybeCacheStateUnknown {
+            state: MaybeCacheState::Unknown(MaybeCacheStateUnknown {
                 cache: self,
                 expiration: expiration,
-                fill: filler
-            }))
+                fill: filler,
+                phantom: std::marker::PhantomData
+            }, PhantomData),
+            phantom: PhantomData
         }
     }
 }
 
-pub struct CacheAccesor<'c, T, C, X, F> where F: FnOnce() -> T, X: FnOnce(&T) -> bool, C: FastCacheGet<T> + FastCacheExpiration<T> {
-    state: std::cell::RefCell<CacheState<'c, T, C, X, F>>
+pub trait Get<R> {
+    fn get(&mut self) -> &R;
 }
 
-impl<'c, T, C, X, F> CacheAccesor<'c, T, C, X, F> where F: FnOnce() -> T, X: FnOnce(&T) -> bool, C: FastCacheGet<T> + FastCacheExpiration<T> {
-    pub fn get(&self) -> std::cell::Ref<T> {
-        take_mut::take(&mut *self.state.borrow_mut(), |v| v.into_known());
+pub struct CacheAccesor<'c, T, C, X, F, R> where F: FnOnce() -> T, X: FnOnce(&T) -> bool, C: FastCacheGet<'c, T, R> + FastCacheExpiration<T> {
+    state: CacheState<'c, T, C, X, F, R>,
+    phantom: PhantomData<R>
+}
 
-        std::cell::Ref::map(self.state.borrow(), |s| {
-            match s {
-                CacheState::Unknown(_) => { unsafe { std::hint::unreachable_unchecked() } },
-                CacheState::Known(s) => s.data,
-            }
-        })
+impl<'c, T, C, X, F, R> Get<R> for CacheAccesor<'c, T, C, X, F, R> where F: FnOnce() -> T, X: FnOnce(&T) -> bool, C: FastCacheGet<'c, T, R> + FastCacheExpiration<T> {
+    fn get(&mut self) -> &R {
+        take_mut::take(&mut self.state, |v| v.into_known());
+
+        match &self.state {
+            CacheState::Unknown(_, _) => { unsafe { std::hint::unreachable_unchecked() } },
+            CacheState::Known(s) => &s.data,
+        }
     }
 }
 
-pub enum CacheState<'c, T, C, X, F> where F: FnOnce() -> T, X: FnOnce(&T) -> bool, C: FastCacheGet<T> + FastCacheExpiration<T> {
-    Unknown(CacheStateUnknown<'c, T, C, X, F>),
-    Known(CacheStateKnown<'c, T>)
+pub enum CacheState<'c, T, C, X, F, R> where F: FnOnce() -> T, X: FnOnce(&T) -> bool, C: FastCacheGet<'c, T, R> + FastCacheExpiration<T> {
+    Unknown(CacheStateUnknown<'c, T, C, X, F, R>, PhantomData<R>),
+    Known(CacheStateKnown<R>)
 }
 
-impl<'c, T, C, X, F> CacheState<'c, T, C, X, F> where F: FnOnce() -> T, X: FnOnce(&T) -> bool, C: FastCacheGet<T> + FastCacheExpiration<T> {
+impl<'c, T, C, X, F, R> CacheState<'c, T, C, X, F, R> where F: FnOnce() -> T, X: FnOnce(&T) -> bool, C: FastCacheGet<'c, T, R> + FastCacheExpiration<T> {
     pub fn into_known(self) -> Self {
         match self {
-            CacheState::Unknown(state) => {
-                let cache = &mut *state.cache;
-
-                if cache.has_expired(state.expiration) {
-                    cache.expire();
-                }
-
-                let ref_val = cache.get_or_insert_with(state.fill);
+            CacheState::Unknown(state, _) => {
+                let ref_val = state.cache
+                    .expire_with(state.expiration)
+                    .get_or_insert_with(state.fill);
         
                 let new_state = CacheStateKnown {
                     data: ref_val
@@ -115,52 +168,52 @@ impl<'c, T, C, X, F> CacheState<'c, T, C, X, F> where F: FnOnce() -> T, X: FnOnc
     }
 }
 
-pub struct CacheStateUnknown<'c, T, C, X, F> where X: FnOnce(&T) -> bool, F: FnOnce() -> T, C: FastCacheGet<T> + FastCacheExpiration<T> {
-    cache: &'c mut C,
+pub struct CacheStateUnknown<'c, T, C, X, F, R> where X: FnOnce(&T) -> bool, F: FnOnce() -> T, C: FastCacheGet<'c, T, R> + FastCacheExpiration<T> {
+    cache: C,
     expiration: X,
-    fill: F
+    fill: F,
+    phantom: PhantomData<(&'c C, R)>
 }
 
-pub struct CacheStateKnown<'c, T> {
-    data: &'c T,
+pub struct CacheStateKnown<T> {
+    data: T,
 }
 
-pub struct MaybeCacheAccesor<'c, T, C, X, F> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool, C: FastCacheMaybeGet<T> + FastCacheExpiration<T> {
-    state: std::cell::RefCell<MaybeCacheState<'c, T, C, X, F>>
+pub trait MaybeGet<R> {
+    fn get(&mut self) -> Option<&R>;
 }
 
-impl<'c, T, C, X, F> MaybeCacheAccesor<'c, T, C, X, F> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool, C: FastCacheMaybeGet<T> + FastCacheExpiration<T> {
-    pub fn get(&self) -> std::cell::Ref<Option<&'c T>> {
-        take_mut::take(&mut *self.state.borrow_mut(), |v| v.into_known());
+pub struct MaybeCacheAccesor<'c, T, C, X, F, R> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool, C: FastCacheMaybeGet<'c, T, R> + FastCacheExpiration<T> {
+    state: MaybeCacheState<'c, T, C, X, F, R>,
+    phantom: PhantomData<R>
+}
 
-        std::cell::Ref::map(self.state.borrow(), |s| {
-            match s {
-                MaybeCacheState::Unknown(_) => { unsafe { std::hint::unreachable_unchecked() } },
-                MaybeCacheState::Known(s) => &s.data,
-            }
-        })
+impl<'c, T, C, X, F, R> MaybeGet<R> for MaybeCacheAccesor<'c, T, C, X, F, R> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool, C: FastCacheMaybeGet<'c, T, R> + FastCacheExpiration<T> {
+    fn get(&mut self) -> Option<&R> {
+        take_mut::take(&mut self.state, |v| v.into_known());
+
+        match &self.state {
+            MaybeCacheState::Unknown(_, _) => { unsafe { std::hint::unreachable_unchecked() } },
+            MaybeCacheState::Known(s) => s.data.as_ref(),
+        }
     }
 }
 
-pub enum MaybeCacheState<'c, T, C, X, F> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool, C: FastCacheMaybeGet<T> + FastCacheExpiration<T> {
-    Unknown(MaybeCacheStateUnknown<'c, T, C, X, F>),
-    Known(MaybeCacheStateKnown<'c, T>)
+pub enum MaybeCacheState<'c, T, C, X, F, R> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool, C: FastCacheMaybeGet<'c, T, R> + FastCacheExpiration<T> {
+    Unknown(MaybeCacheStateUnknown<'c, T, C, X, F, R>, PhantomData<R>),
+    Known(MaybeCacheStateKnown<R>)
 }
 
-impl<'c, T, C, X, F> MaybeCacheState<'c, T, C, X, F> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool, C: FastCacheMaybeGet<T> + FastCacheExpiration<T> {
+impl<'c, T, C, X, F, R> MaybeCacheState<'c, T, C, X, F, R> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool, C: FastCacheMaybeGet<'c, T, R> + FastCacheExpiration<T> {
     pub fn into_known(self) -> Self {
         match self {
-            MaybeCacheState::Unknown(state) => {
-                let cache = &mut *state.cache;
-
-                if cache.has_expired(state.expiration) {
-                    cache.expire();
-                }
-
-                let val = cache.maybe_get_or_insert_with(state.fill);
+            MaybeCacheState::Unknown(state, _) => {
+                let ref_val = state.cache
+                    .expire_with(state.expiration)
+                    .maybe_get_or_insert_with(state.fill);
         
                 let new_state = MaybeCacheStateKnown {
-                    data: val
+                    data: ref_val
                 };
 
                 MaybeCacheState::Known(new_state)            
@@ -170,12 +223,13 @@ impl<'c, T, C, X, F> MaybeCacheState<'c, T, C, X, F> where F: FnOnce() -> Option
     }
 }
 
-pub struct MaybeCacheStateUnknown<'c, T, C, X, F> where X: FnOnce(&T) -> bool, F: FnOnce() -> Option<T>, C: FastCacheMaybeGet<T> + FastCacheExpiration<T> {
-    cache: &'c mut C,
+pub struct MaybeCacheStateUnknown<'c, T, C, X, F, R> where X: FnOnce(&T) -> bool, F: FnOnce() -> Option<T>, C: FastCacheMaybeGet<'c, T, R> + FastCacheExpiration<T> {
+    cache: C,
     expiration: X,
-    fill: F
+    fill: F,
+    phantom: std::marker::PhantomData<(&'c C, R)>
 }
 
-pub struct MaybeCacheStateKnown<'c, T> {
-    data: Option<&'c T>,
+pub struct MaybeCacheStateKnown<T> {
+    data: Option<T>,
 }
