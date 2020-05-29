@@ -126,6 +126,8 @@ impl<'a, C, T, R> FastCacheMaybeAccessor<'a, T, R> for C where C: FastCacheExpir
 
 pub trait Get<R> {
     fn get(&mut self) -> &R;
+
+    fn take(self) -> R;
 }
 
 pub struct CacheAccesor<'c, T, C, X, F, R> where F: FnOnce() -> T, X: FnOnce(&T) -> bool, C: FastCacheGet<'c, T, R> + FastCacheExpiration<T> {
@@ -140,6 +142,13 @@ impl<'c, T, C, X, F, R> Get<R> for CacheAccesor<'c, T, C, X, F, R> where F: FnOn
         match &self.state {
             CacheState::Unknown(_, _) => { unsafe { std::hint::unreachable_unchecked() } },
             CacheState::Known(s) => &s.data,
+        }
+    }
+
+    fn take(self) -> R {
+        match self.state.into_known() {
+            CacheState::Unknown(_, _) => { unsafe { std::hint::unreachable_unchecked() } },
+            CacheState::Known(s) => s.data,
         }
     }
 }
@@ -181,6 +190,8 @@ pub struct CacheStateKnown<T> {
 
 pub trait MaybeGet<R> {
     fn get(&mut self) -> Option<&R>;
+
+    fn take(self) -> Option<R>;
 }
 
 pub struct MaybeCacheAccesor<'c, T, C, X, F, R> where F: FnOnce() -> Option<T>, X: FnOnce(&T) -> bool, C: FastCacheMaybeGet<'c, T, R> + FastCacheExpiration<T> {
@@ -195,6 +206,13 @@ impl<'c, T, C, X, F, R> MaybeGet<R> for MaybeCacheAccesor<'c, T, C, X, F, R> whe
         match &self.state {
             MaybeCacheState::Unknown(_, _) => { unsafe { std::hint::unreachable_unchecked() } },
             MaybeCacheState::Known(s) => s.data.as_ref(),
+        }
+    }
+
+    fn take(self) -> Option<R> {
+        match self.state.into_known() {
+            MaybeCacheState::Unknown(_, _) => { unsafe { std::hint::unreachable_unchecked() } },
+            MaybeCacheState::Known(s) => s.data,
         }
     }
 }
