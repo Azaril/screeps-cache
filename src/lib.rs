@@ -101,7 +101,7 @@ impl<'a, C, T, R> FastCacheAccessor<'a, T, R> for C where C: FastCacheExpiration
         CacheAccesor {
             state: CacheState::Unknown(CacheStateUnknown {
                 cache: self,
-                expiration: expiration,
+                expiration,
                 fill: filler,
                 phantom: PhantomData
             }, PhantomData),
@@ -115,7 +115,7 @@ impl<'a, C, T, R> FastCacheMaybeAccessor<'a, T, R> for C where C: FastCacheExpir
         MaybeCacheAccesor {
             state: MaybeCacheState::Unknown(MaybeCacheStateUnknown {
                 cache: self,
-                expiration: expiration,
+                expiration,
                 fill: filler,
                 phantom: std::marker::PhantomData
             }, PhantomData),
