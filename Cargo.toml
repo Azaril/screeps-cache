@@ -4,5 +4,8 @@ version = "0.1.0"
 authors = ["William Archbell <william@archbell.com>"]
 edition = "2018"
 
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
 take_mut = "0.2.2"
